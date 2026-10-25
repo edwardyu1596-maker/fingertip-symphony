@@ -571,13 +571,13 @@ function makeQR(url) {
   } catch (e) { return null; }
 }
 function showCard(info) {
+  // 贺卡统一使用公开分享站点，避免从本地文件或旧托管地址生成不可访问的二维码。
+  info = { ...info, url: 'https://edwardyu1596-maker.github.io/fingertip-symphony/' + new URL(info.url, location.href).hash };
   const c = renderCard(info);
   $('#cardImg').src = c.toDataURL('image/jpeg', 0.92);
   $('#saveBtn').onclick = () => { const a = document.createElement('a'); a.href = $('#cardImg').src; a.download = `指尖交响_致${info.to}.jpg`; a.click(); };
   $('#copyBtn').onclick = () => navigator.clipboard.writeText(info.url).then(() => toast('链接已复制，发给 TA 吧'));
-  $('#linkNote').textContent = location.protocol === 'file:'
-    ? '提示：当前为本地文件，把网页部署到网上（如 GitHub Pages）后，二维码即可在手机上直接打开。'
-    : '将贺卡发给朋友，微信长按识别二维码，打开后轻触“打开并播放”即可聆听。';
+  $('#linkNote').textContent = '将贺卡发给朋友，微信长按识别二维码，打开后轻触“打开并播放”即可聆听。';
   $('#form').hidden = true; $('#hud').hidden = true; $('#card').hidden = false;
 }
 
