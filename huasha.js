@@ -151,7 +151,7 @@ const Huasha = (() => {
       $('#tip').textContent='《画沙》 · 简谱器乐版 · 66 BPM · F → D → F · 音符正在绘成光的轨迹';
       play();
     } catch(e) {console.error(e);toast('播放失败：'+e.message);throw e;}
-    finally {button.disabled=false;button.textContent='♫ 演奏《画沙》';}
+    finally {button.disabled=false;button.textContent='《画沙》';}
   }
   function position() { return active?Math.min(ctx.currentTime-started,duration):elapsed; }
   function point(e) {

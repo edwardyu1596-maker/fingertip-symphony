@@ -78,7 +78,7 @@ const SpecialPerson = (() => {
     } catch(e) {
       media.pause(); toast('音乐未能启动，请检查网络后再次轻触播放'); throw e;
     } finally {
-      starting = false; button.disabled = false; button.textContent = '♫ 演奏《特别的人》';
+      starting = false; button.disabled = false; button.textContent = '《特别的人》';
     }
   }
   const cardDownload = document.createElement('button');

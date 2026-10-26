@@ -1,20 +1,27 @@
 <!DOCTYPE html>
 <!--
-  《指尖交响》 A Symphony at Your Fingertips
-  ------------------------------------------------------------
-  举起手，在空中弹奏一首曲子；指尖划过的轨迹被画成一幅画；
-  演奏结束后，音乐与画作合成一张可分享的电子贺卡。
+  《指尖交响》
+  以手为弦，以光为墨。
 
-  运行方式：无需编译。用 Chrome / Edge 浏览器直接打开本文件即可（需联网加载手势识别模型）。
-  技术栈：原生 HTML + Canvas 2D + Web Audio API，手势识别使用 Google MediaPipe Hand Landmarker。
+  在空中抬起手弹一支曲子，指尖走过的地方留下光；
+  曲终时，音乐与画合成一封可以扫码重听的信笺。
+
+  运行：无需编译，用 Chrome / Edge 打开本文件即可（需联网）。
+  技术：HTML + Canvas 2D + Web Audio API；手势识别使用 Google MediaPipe Hand Landmarker。
+
+  同目录文件：
+    huasha.js / special-person-score.js / special-person.js —— 两首简谱曲目《画沙》《特别的人》的乐谱与演奏
+    audio/special-person.m4a —— 《特别的人》预先合成的器乐音频（手机上无需现场合成）
+    vendor/qrcode.min.js —— 二维码生成库
+    hand_landmarker.task —— 手势识别模型
 
   代码结构：
     0. 全局状态与画布
-    1. 音乐引擎 —— 用 Web Audio 从零合成音色（不使用任何音频文件）
-    2. 绘画引擎 —— 把每个音符变成光的轨迹、花朵与粒子
+    1. 音乐引擎 —— 用 Web Audio 从零合成音色，不使用任何音频文件
+    2. 绘画引擎 —— 每个音开一朵梅花，每个和弦漾开一圈涟漪
     3. 三种输入 —— 摄像头手势 / 鼠标 / 自动演奏
-    4. 录制与编码 —— 把整场演奏压缩进一条网址
-    5. 贺卡生成 —— 画作 + 祝福 + 二维码
+    4. 录制与编码 —— 把整支曲子压缩进一条网址
+    5. 信笺生成 —— 画 + 寄语 + 二维码
     6. 主流程
 -->
 <html lang="zh-CN">
@@ -22,46 +29,68 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>指尖交响</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<!-- 字体异步加载：国内网络打不开时不阻塞页面，直接退回系统宋体 -->
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;600&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
 <script src="vendor/qrcode.min.js"></script>
 <style>
-  :root { --gold: #f5d38a; --ink: #e8ecff; }
+  :root {
+    --ink: #0b0e17; --paper: #ece4d3; --dim: rgba(236,228,211,.55); --faint: rgba(236,228,211,.32);
+    --gold: #d6b676; --seal: #b23a2e;
+    --serif: "Noto Serif SC", "Songti SC", "STSong", "Source Han Serif SC", "SimSun", serif;
+  }
   * { box-sizing: border-box; margin: 0; }
-  html, body { height: 100%; overflow: hidden; background: #05081a; color: var(--ink);
-    font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; user-select: none; }
+  html, body { height: 100%; overflow: hidden; background: var(--ink); color: var(--paper);
+    font-family: var(--serif); user-select: none; -webkit-font-smoothing: antialiased; }
   canvas { position: fixed; inset: 0; width: 100%; height: 100%; }
   #fx { pointer-events: none; }
-  #cam { position: fixed; right: 16px; bottom: 16px; width: 180px; border-radius: 10px; transform: scaleX(-1);
-    opacity: 0; transition: opacity .6s; pointer-events: none; z-index: 4; }
-  #cam.on { opacity: .3; }
+  #cam { position: fixed; right: 24px; bottom: 24px; width: 168px; transform: scaleX(-1); filter: grayscale(1) contrast(1.1);
+    opacity: 0; transition: opacity .8s; pointer-events: none; z-index: 4; border: 1px solid var(--faint); }
+  #cam.on { opacity: .28; }
+
   .panel { position: fixed; inset: 0; z-index: 10; display: flex; flex-direction: column; align-items: center;
-    justify-content: center; gap: 18px; padding: 24px; text-align: center;
-    background: radial-gradient(ellipse at center, rgba(10,16,48,.55), rgba(3,5,16,.92)); }
-  .panel.soft { background: rgba(3,5,16,.55); backdrop-filter: blur(2px); }
+    justify-content: center; gap: 22px; padding: 24px; text-align: center; background: rgba(8,10,18,.84); }
+  .panel.soft { background: rgba(8,10,18,.62); backdrop-filter: blur(3px); }
   .panel[hidden], #hud[hidden] { display: none; }
-  h1 { font-size: clamp(44px, 9vw, 96px); font-weight: 300; letter-spacing: .25em; padding-left: .25em;
-    background: linear-gradient(90deg, #8ec5ff, #f5a3d8, #f5d38a); -webkit-background-clip: text; background-clip: text; color: transparent; }
-  h2 { font-weight: 400; letter-spacing: .1em; }
-  .sub { opacity: .6; letter-spacing: .35em; font-size: 13px; }
-  .desc { opacity: .8; line-height: 2; max-width: 560px; }
-  .small { opacity: .55; font-size: 13px; line-height: 1.8; }
-  .btns { display: flex; gap: 14px; flex-wrap: wrap; justify-content: center; }
-  button { font: inherit; color: var(--ink); background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.25);
-    padding: 12px 26px; border-radius: 999px; cursor: pointer; transition: .2s; }
-  button:hover { background: rgba(255,255,255,.15); border-color: var(--gold); }
-  button.main { border-color: var(--gold); color: var(--gold); }
-  label { display: flex; gap: 12px; align-items: center; width: min(460px, 90vw); }
-  label span { width: 3em; opacity: .7; flex: none; }
-  input { flex: 1; font: inherit; color: var(--ink); background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.2);
-    border-radius: 8px; padding: 10px 14px; outline: none; }
+
+  .title { position: relative; }
+  h1 { font-size: clamp(40px, 7vw, 76px); font-weight: 400; letter-spacing: .42em; padding-left: .42em; line-height: 1.2; }
+  h2 { font-size: clamp(28px, 4vw, 40px); font-weight: 400; letter-spacing: .3em; padding-left: .3em; }
+  .seal { display: inline-grid; place-items: center; width: 30px; height: 30px; background: var(--seal); color: #f3e9d8;
+    font-size: 16px; font-style: normal; border-radius: 2px; box-shadow: inset 0 0 0 2px rgba(243,233,216,.22); }
+  .title .seal { position: absolute; right: -34px; top: 2px; }
+  .seal.sm { width: 18px; height: 18px; font-size: 10px; box-shadow: inset 0 0 0 1px rgba(243,233,216,.25); }
+  .motto, .fhead { color: var(--gold); font-size: 15px; font-weight: 400; letter-spacing: .6em; padding-left: .6em; }
+  .songs { display: flex; gap: 28px; align-items: baseline; color: var(--faint); font-size: 13px; letter-spacing: .2em; }
+  .songs button { font-size: 14px; }
+  .rule { width: 44px; height: 1px; background: var(--gold); opacity: .6; }
+  .desc { color: var(--dim); font-size: 15px; line-height: 2.2; letter-spacing: .08em; }
+  .note { color: rgba(236,228,211,.36); font-size: 12px; letter-spacing: .2em; }
+  .links { display: flex; gap: 40px; flex-wrap: wrap; justify-content: center; margin-top: 10px; }
+
+  button { font: inherit; font-size: 16px; letter-spacing: .25em; padding: 6px 0 6px .25em; color: var(--paper);
+    background: none; border: none; border-bottom: 1px solid var(--faint); border-radius: 0; cursor: pointer; transition: color .3s, border-color .3s; }
+  button:hover, button:focus-visible { color: var(--gold); border-color: var(--gold); outline: none; }
+  button.main { color: var(--gold); border-color: var(--gold); }
+
+  label { display: flex; gap: 18px; align-items: baseline; width: min(420px, 88vw); }
+  label span { width: 3em; flex: none; text-align: left; color: var(--gold); font-size: 14px; letter-spacing: .3em; }
+  input { flex: 1; font: inherit; font-size: 17px; letter-spacing: .05em; color: var(--paper); background: none;
+    border: none; border-bottom: 1px solid var(--faint); padding: 8px 2px; outline: none; transition: border-color .3s; }
   input:focus { border-color: var(--gold); }
+
   #hud { position: fixed; inset: 0; pointer-events: none; z-index: 5; }
-  #hud .top { position: absolute; top: 16px; left: 20px; right: 20px; display: flex; justify-content: space-between; align-items: center; }
-  #hud .logo { letter-spacing: .3em; opacity: .7; }
-  #hud .tip { position: absolute; bottom: 24px; left: 0; right: 0; font-size: 14px; opacity: .7; text-align: center; letter-spacing: .05em; }
-  #hud button { pointer-events: auto; padding: 8px 20px; margin-left: 12px; }
-  #cardImg { max-width: min(92vw, 1100px); max-height: 68vh; border-radius: 12px; box-shadow: 0 20px 80px rgba(0,0,0,.7); }
-  #toast { position: fixed; top: 20px; left: 50%; transform: translateX(-50%); z-index: 20; background: rgba(0,0,0,.7);
-    padding: 10px 20px; border-radius: 999px; font-size: 14px; opacity: 0; transition: .4s; pointer-events: none; }
+  #hud .top { position: absolute; top: 22px; left: 28px; right: 28px; display: flex; justify-content: space-between; align-items: center; }
+  #hud .brand { display: flex; gap: 12px; align-items: center; color: var(--dim); font-size: 14px; letter-spacing: .45em; }
+  #hud .right { display: flex; gap: 28px; align-items: center; color: var(--dim); font-size: 13px; letter-spacing: .15em; font-variant-numeric: tabular-nums; }
+  #hud button { pointer-events: auto; font-size: 14px; }
+  #hud .tip { position: absolute; bottom: 26px; left: 0; right: 0; color: var(--faint); font-size: 13px; letter-spacing: .2em; white-space: pre; text-align: center; }
+
+  #cardImg { max-width: min(92vw, 1120px); max-height: 70vh; box-shadow: 0 30px 90px rgba(0,0,0,.65); }
+  #toast { position: fixed; top: 24px; left: 50%; transform: translateX(-50%); z-index: 20; padding: 10px 22px;
+    background: rgba(18,21,32,.94); border: 1px solid rgba(214,182,118,.35); font-size: 14px; letter-spacing: .1em;
+    opacity: 0; transition: opacity .4s; pointer-events: none; }
 </style>
 </head>
 <body>
@@ -71,49 +100,53 @@
 <video id="cam" playsinline muted></video>
 
 <div id="hud" hidden>
-  <div class="top"><span class="logo">指尖交响</span><span><span id="stat"></span><button id="songPause" hidden>暂停</button><button id="songPaintAll" hidden>生成完整画作</button><button id="songDownload" hidden>保存《画沙》音频</button><button id="doneBtn">完成 ✓</button></span></div>
+  <div class="top">
+    <span class="brand"><i class="seal sm">奏</i>指尖交响</span>
+    <span class="right"><span id="stat"></span><button id="songPause" hidden>暂停</button><button id="songPaintAll" hidden>画完整幅</button><button id="songDownload" hidden>保存音频</button><button id="doneBtn">曲终 →</button></span>
+  </div>
   <div class="tip" id="tip"></div>
 </div>
 
 <div id="start" class="panel">
-  <div class="sub">A SYMPHONY AT YOUR FINGERTIPS</div>
-  <h1>指尖交响</h1>
-  <p class="desc">举起你的手，在空中弹奏一首只属于你的曲子。<br>指尖划过的轨迹会变成一幅画，<br>最后合成一张贺卡，送给你最想祝福的人。</p>
-  <div class="btns">
-    <button class="main" data-mode="hand">✋ 用手演奏</button>
-    <button data-mode="mouse">🖱 用鼠标演奏</button>
-    <button data-mode="auto">▶ 自动演奏</button>
-    <button class="main" id="huashaBtn">♫ 演奏《画沙》</button>
-    <button class="main" id="specialPersonBtn">♫ 演奏《特别的人》</button>
+  <div class="title"><h1>指尖交响</h1><i class="seal">奏</i></div>
+  <div class="motto">以手为弦 · 以光为墨</div>
+  <div class="rule"></div>
+  <p class="desc">在空中抬起手，为一个人弹一支曲子。<br>指尖走过的地方会留下光，曲终时，它就是一封信。</p>
+  <div class="links">
+    <button class="main" data-mode="hand">以手弹奏</button>
+    <button data-mode="mouse">以鼠标弹奏</button>
+    <button data-mode="auto">听它自己弹</button>
   </div>
-  <p class="small" id="loading">建议佩戴耳机或打开音量 · 手势模式需要摄像头</p>
+  <div class="songs">或者听一首<button id="huashaBtn">《画沙》</button><button id="specialPersonBtn">《特别的人》</button></div>
+  <p class="note" id="loading">宜戴耳机 · 以手弹奏需开启摄像头</p>
 </div>
 
 <div id="form" class="panel soft" hidden>
-  <h2>你的曲子完成了</h2>
-  <p class="small" id="formStat"></p>
-  <label><span>送给</span><input id="fTo" maxlength="12" value="你"></label>
-  <label><span>祝福</span><input id="fMsg" maxlength="40" value="愿你的每一天，都像这首曲子一样闪闪发光。"></label>
-  <label><span>落款</span><input id="fFrom" maxlength="12" value="一个写代码的人"></label>
-  <div class="btns"><button class="main" id="makeCard">生成贺卡</button><button class="again">重新演奏</button></div>
+  <h2 class="fhead">曲终</h2>
+  <p class="desc" id="formStat"></p>
+  <label><span>致</span><input id="fTo" maxlength="10" value="你"></label>
+  <label><span>寄语</span><input id="fMsg" maxlength="36" value="愿你往后的日子，都有好听的声音。"></label>
+  <label><span>落款</span><input id="fFrom" maxlength="10" value="一个写代码的人"></label>
+  <div class="links"><button class="main" id="makeCard">封笺</button><button class="again">重弹</button></div>
 </div>
 
 <div id="card" class="panel soft" hidden>
-  <img id="cardImg" alt="贺卡">
-  <div class="btns">
-    <button class="main" id="saveBtn">保存贺卡</button>
-    <button id="copyBtn">复制分享链接</button>
+  <img id="cardImg" alt="信笺">
+  <div class="links btns">
+    <button class="main" id="saveBtn">存为图片</button>
+    <button id="copyBtn">复制链接</button>
     <button class="again">再弹一首</button>
   </div>
-  <p class="small" id="linkNote"></p>
+  <p class="note" id="linkNote"></p>
 </div>
 
 <div id="env" class="panel" hidden>
-  <div class="sub">YOU'VE GOT A SONG</div>
+  <div class="motto">有一封信</div>
   <h2 id="envTitle"></h2>
+  <div class="rule"></div>
   <p class="desc" id="envDesc"></p>
-  <button class="main" id="openBtn">✉ 轻触打开并播放</button>
-  <p class="small" id="playHint">轻触按钮，聆听旋律并观看画作。请打开手机音量。</p>
+  <div class="links"><button class="main" id="openBtn">拆开</button></div>
+  <p class="note" id="playHint">拆开后会有声音，请打开音量</p>
 </div>
 
 <div id="toast"></div>
@@ -121,21 +154,31 @@
 <script>
 /* ============================================================
  * 0. 全局状态与画布
- *    三层画布：bg 星空背景 / art 永久保留的画作 / fx 每帧重绘的特效（粒子、光标、骨架）
+ *    三层画布：bg 背景 / art 永久保留的画 / fx 每帧重绘的特效（光标、涟漪、微尘）
  * ============================================================ */
 const $ = s => document.querySelector(s);
 const bg = $('#bg'), art = $('#art'), fx = $('#fx');
 const bctx = bg.getContext('2d'), actx = art.getContext('2d'), fctx = fx.getContext('2d');
 const DPR = Math.min(devicePixelRatio || 1, 2);
-const NOTE_NAMES = ['Do', 'Re', 'Mi', 'Sol', 'La'];
+const SERIF = '"Noto Serif SC","Songti SC","STSong","Source Han Serif SC","SimSun",serif';
 const S = { mode: 'idle', src: null, smooth: null, prevPinch: false, prevOpen: false, lastStep: -1,
             lastNoteT: 0, vT: 0, t0: 0, notes: 0, lifted: true, aspect: 16 / 9 };
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const stepOf = y => clamp(Math.floor((1 - y) * 15), 0, 14);   // 纵坐标 → 音阶序号（越高音越高）
 
+// 数字写成汉字：86 → 八十六
+const CN = '零一二三四五六七八九';
+function cnNum(n) {
+  n = clamp(Math.round(n), 0, 999);
+  if (n < 10) return CN[n];
+  if (n < 100) return (n < 20 ? '' : CN[Math.floor(n / 10)]) + '十' + (n % 10 ? CN[n % 10] : '');
+  const r = n % 100;
+  return CN[Math.floor(n / 100)] + '百' + (r === 0 ? '' : r < 10 ? '零' + CN[r] : (r < 20 ? '一' : '') + cnNum(r));
+}
+
 function toast(msg) { const t = $('#toast'); t.textContent = msg; t.style.opacity = 1; setTimeout(() => t.style.opacity = 0, 2600); }
 
-// 在点击处理器内立即恢复音频，并发出静音采样，兼容手机 WebView 的音频启动限制。
+// 在点击处理器内立即恢复音频，并发出静音采样，兼容手机 WebView（如微信）的音频启动限制。
 async function unlockAudio(context) {
   const resumed = context.resume();
   const silent = context.createBufferSource();
@@ -146,30 +189,32 @@ async function unlockAudio(context) {
   let timer;
   try {
     await Promise.race([resumed, new Promise((_, reject) => {
-      timer = setTimeout(() => reject(new Error('音频尚未启动，请再次轻触播放')), 5000);
+      timer = setTimeout(() => reject(new Error('音频尚未启动，请再次轻触')), 5000);
     })]);
-    if (context.state !== 'running') throw new Error('音频尚未启动，请再次轻触播放');
+    if (context.state !== 'running') throw new Error('音频尚未启动，请再次轻触');
   } finally { clearTimeout(timer); }
 }
 
+// 拆开信封：启动失败时留在信封页，提示再点一次
 async function openSharedSong(play) {
   const button = $('#openBtn');
   if (button.disabled) return;
-  button.disabled = true; button.textContent = '正在准备音乐…';
+  button.disabled = true; button.textContent = '正在准备……';
   try { await play(); }
   catch (e) {
     console.error(e);
     $('#env').hidden = false;
-    $('#playHint').textContent = '播放未能启动，请检查音量后再次轻触。如仍无声音，可在右上角选择在浏览器中打开。';
-    toast('播放未能启动，请再次轻触播放');
+    $('#playHint').textContent = '声音没有响起来。请检查音量后再点一次；仍然没有声音的话，可在右上角选择用浏览器打开。';
+    toast('请再点一次拆开');
   } finally {
-    button.disabled = false; button.textContent = '✉ 轻触打开并播放';
+    button.disabled = false; button.textContent = '拆开';
   }
 }
 
 function resize() {
   const keep = document.createElement('canvas');       // 改变窗口大小时保留已画的内容
-  keep.width = art.width; keep.height = art.height; keep.getContext('2d').drawImage(art, 0, 0);
+  keep.width = art.width; keep.height = art.height;
+  if (art.width && art.height) keep.getContext('2d').drawImage(art, 0, 0);
   for (const c of [bg, art, fx]) {
     c.width = innerWidth * DPR; c.height = innerHeight * DPR;
     c.getContext('2d').setTransform(DPR, 0, 0, DPR, 0, 0);
@@ -179,31 +224,40 @@ function resize() {
   drawBackground();
 }
 
-// 画作区域：现场演奏时为全屏；回放时按原始长宽比居中适配（手机竖屏也不变形）
+// 画的区域：现场演奏时为全屏；回放时按原始长宽比居中适配（手机竖屏也不变形）
 function fitView(a) {
   const W = innerWidth, H = innerHeight;
   Painter.view = W / H > a ? { w: H * a, h: H, x: (W - H * a) / 2, y: 0 }
                            : { w: W, h: W / a, x: 0, y: (H - W / a) / 2 };
 }
 
+// 背景：墨色底 + 一点纸纹颗粒 + 疏星 + 四周暗角
 function drawBackground() {
-  const W = innerWidth, H = innerHeight;
-  const g = bctx.createRadialGradient(W / 2, H * 0.6, 0, W / 2, H * 0.6, Math.max(W, H) * 0.8);
-  g.addColorStop(0, '#111a44'); g.addColorStop(1, '#03050f');
+  const W = innerWidth, H = innerHeight, R = Math.max(W, H);
+  bctx.fillStyle = '#0b0e17'; bctx.fillRect(0, 0, W, H);
+  let g = bctx.createRadialGradient(W / 2, H * 0.42, 0, W / 2, H * 0.42, R * 0.7);
+  g.addColorStop(0, 'rgba(40,48,80,0.5)'); g.addColorStop(1, 'rgba(40,48,80,0)');
   bctx.fillStyle = g; bctx.fillRect(0, 0, W, H);
-  for (let i = 0; i < 260; i++) {
-    bctx.fillStyle = `rgba(200,215,255,${Math.random() * 0.6})`;
-    bctx.beginPath(); bctx.arc(Math.random() * W, Math.random() * H, Math.random() * 1.2, 0, 7); bctx.fill();
+  for (let i = 0, n = W * H / 90; i < n; i++) {
+    bctx.fillStyle = `rgba(236,228,211,${Math.random() * 0.035})`;
+    bctx.fillRect(Math.random() * W, Math.random() * H, 1, 1);
   }
+  for (let i = 0; i < 70; i++) {
+    bctx.fillStyle = `rgba(236,228,211,${0.1 + Math.random() * 0.4})`;
+    bctx.beginPath(); bctx.arc(Math.random() * W, Math.random() * H, Math.random() * 0.9, 0, 7); bctx.fill();
+  }
+  g = bctx.createRadialGradient(W / 2, H / 2, R * 0.35, W / 2, H / 2, R * 0.75);
+  g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(0,0,0,0.5)');
+  bctx.fillStyle = g; bctx.fillRect(0, 0, W, H);
 }
 
 /* ============================================================
  * 1. 音乐引擎
- *    - 音阶：C 大调五声音阶（Do Re Mi Sol La），共 3 个八度 15 个音。
- *      五声音阶没有半音，任意组合都和谐 —— 所以"怎么弹都好听"。
- *    - 音色：三角波 + 两个泛音正弦波，配合快起慢落的包络，接近钢片琴 / 拇指琴。
- *    - 空间感：用"指数衰减的白噪声"现场生成混响脉冲，再加一路回声；
- *      手在屏幕左右的位置决定声音在左右声道的位置。
+ *    - 音阶：五声音阶「宫 商 角 徵 羽」（即 Do Re Mi Sol La），共三个八度十五个音。
+ *      五声音阶里没有半音，任意组合都和谐 —— 不会乐器的人也能弹得好听。
+ *    - 音色：三角波 + 两个泛音正弦波，快起慢落，接近钢片琴 / 拇指琴。
+ *    - 空间感：用"指数衰减的白噪声"现场生成混响，再加一路回声；
+ *      手在左边，声音就从左边来。
  * ============================================================ */
 const Audio = {
   ctx: null,
@@ -228,7 +282,7 @@ const Audio = {
   },
   freq(i) { const st = [0, 2, 4, 7, 9]; return 261.63 * Math.pow(2, (Math.floor(i / 5) * 12 + st[i % 5]) / 12); },
 
-  // 演奏一个音：i 为音阶序号，pan 为左右声道（-1 ~ 1），when 为延迟秒数
+  // 弹一个音：i 为音阶序号，pan 为左右声道（-1 ~ 1），when 为延迟秒数
   note(i, vel = 1, pan = 0, when = 0) {
     const ctx = this.ctx, t = ctx.currentTime + when, f = this.freq(i);
     const env = ctx.createGain();
@@ -243,7 +297,7 @@ const Audio = {
       o.connect(g); g.connect(env); o.start(t); o.stop(t + 2.5);
     }
   },
-  // 和弦：以当前音为根，按五声音阶隔一取一堆叠，略微错开形成"琶音"，再加一个低音
+  // 和弦：以当前音为根，在五声音阶里隔一取一堆叠，略微错开成琶音，再垫一个低音
   chord(i, pan = 0) {
     const root = Math.max(0, i - 2);
     [0, 2, 4, 7].forEach((k, j) => { if (root + k < 15) this.note(root + k, 0.7, pan, j * 0.06); });
@@ -253,7 +307,7 @@ const Audio = {
     g.gain.exponentialRampToValueAtTime(0.0001, t + 3);
     o.connect(g); g.connect(this.out); g.connect(this.rev); o.start(t); o.stop(t + 3.1);
   },
-  // 背景氛围音：三个低频锯齿波经过低通滤波器，滤波频率被一个极慢的振荡器推动，像在"呼吸"
+  // 底下一层很轻的持续音：三个低频锯齿波过低通滤波器，滤波频率被极慢的振荡推动，像在呼吸
   drone() {
     const ctx = this.ctx, g = ctx.createGain(), lp = ctx.createBiquadFilter();
     g.gain.setValueAtTime(0, ctx.currentTime); g.gain.linearRampToValueAtTime(0.03, ctx.currentTime + 4);
@@ -269,14 +323,22 @@ const Audio = {
 
 /* ============================================================
  * 2. 绘画引擎
- *    - 声音与颜色一一对应：低音为深蓝，越往高音越偏向紫、粉、金。
- *    - 轨迹：用"中点二次贝塞尔曲线"连接采样点，使线条平滑；
- *      多层不同粗细、不同透明度的线叠加（lighter 混合模式）形成发光效果。
- *    - 单音 → 在画上留下一朵花；和弦 → 留下一个曼陀罗光环，并爆发粒子。
+ *    - 五声各配一种中国传统色：宫·缃黄  商·月白  角·天青  徵·朱砂  羽·黛蓝
+ *      同一个音，八度越高颜色越亮。
+ *    - 轨迹：用"中点二次贝塞尔曲线"连接采样点，线条才圆润；
+ *      按下时是三层叠加的光，松开时只是一根细丝，像琴弦。
+ *    - 每弹一个音，开一朵五瓣梅花（五声对五瓣）；每个和弦，漾开一圈涟漪。
  * ============================================================ */
+const TONES = [
+  { name: '宫', h: 40, s: 72 }, { name: '商', h: 205, s: 28 }, { name: '角', h: 172, s: 42 },
+  { name: '徵', h: 6, s: 70 },  { name: '羽', h: 222, s: 62 }
+];
 const Painter = {
   view: { x: 0, y: 0, w: 1, h: 1 }, pts: [], parts: [], rings: [],
-  hue: i => (205 + i * 11) % 360,
+  color(i, a, dl = 0) {
+    const t = TONES[i % 5], l = Math.min(94, 60 + Math.floor(i / 5) * 9 + dl);
+    return `hsla(${t.h},${t.s}%,${l}%,${a})`;
+  },
   k() { return Math.min(this.view.w, this.view.h) / 800; },          // 尺寸随屏幕缩放
   toScreen(p) { return { x: this.view.x + p.x * this.view.w, y: this.view.y + p.y * this.view.h }; },
   lift() { this.pts = []; },
@@ -286,107 +348,122 @@ const Painter = {
     if (pts.length && Math.hypot(p.x - pts[pts.length - 1].x, p.y - pts[pts.length - 1].y) < 0.8) return;
     pts.push(p); if (pts.length > 3) pts.shift();
     if (pts.length < 3) return;
-    const [a, b, c] = pts, k = this.k(), h = this.hue(step);
+    const [a, b, c] = pts, k = this.k();
     const m1 = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, m2 = { x: (b.x + c.x) / 2, y: (b.y + c.y) / 2 };
-    const thin = clamp(1.4 - Math.hypot(c.x - b.x, c.y - b.y) / 80, 0.5, 1.4);   // 越快越细，像毛笔
-    const layers = pressed ? [[20, 0.04], [8, 0.1], [2.2, 0.7]] : [[6, 0.025], [1.2, 0.22]];
+    const thin = clamp(1.3 - Math.hypot(c.x - b.x, c.y - b.y) / 90, 0.5, 1.3);   // 越快越细，像行笔
+    const layers = pressed ? [[11, 0.045, 0], [3.5, 0.16, 5], [1.1, 0.85, 18]] : [[0.9, 0.16, 12]];
     actx.save(); actx.globalCompositeOperation = 'lighter'; actx.lineCap = 'round';
-    for (const [w, al] of layers) {
-      actx.strokeStyle = `hsla(${h},90%,${pressed ? 65 : 78}%,${al})`;
+    for (const [w, al, dl] of layers) {
+      actx.strokeStyle = this.color(step, al, dl);
       actx.lineWidth = w * k * (pressed ? thin : 1);
       actx.beginPath(); actx.moveTo(m1.x, m1.y); actx.quadraticCurveTo(b.x, b.y, m2.x, m2.y); actx.stroke();
     }
     actx.restore();
   },
 
-  bloom(np, i) {                         // 单音：花瓣数与大小由音高决定
-    const p = this.toScreen(np), h = this.hue(i), n = 5 + i % 4, r = (16 + i * 1.6) * this.k();
+  // 梅花：五片圆瓣 + 一簇花蕊；音越高，花越大
+  bloom(np, i) {
+    const p = this.toScreen(np), k = this.k(), r = (15 + (i % 5) * 1.8 + Math.floor(i / 5) * 3.5) * k;
     actx.save(); actx.globalCompositeOperation = 'lighter'; actx.translate(p.x, p.y); actx.rotate(Math.random() * 7);
-    actx.fillStyle = `hsla(${h},90%,70%,0.12)`;
-    for (let j = 0; j < n; j++) {
-      actx.rotate(Math.PI * 2 / n);
-      actx.beginPath(); actx.ellipse(r * 0.6, 0, r * 0.6, r * 0.2, 0, 0, 7); actx.fill();
+    actx.lineWidth = 0.8 * k;
+    for (let j = 0; j < 5; j++) {
+      const a = j / 5 * Math.PI * 2, cx = Math.cos(a) * r * 0.55, cy = Math.sin(a) * r * 0.55;
+      actx.fillStyle = this.color(i, 0.09); actx.strokeStyle = this.color(i, 0.4, 12);
+      actx.beginPath(); actx.arc(cx, cy, r * 0.45, 0, 7); actx.fill(); actx.stroke();
     }
-    const g = actx.createRadialGradient(0, 0, 0, 0, 0, r * 0.5);
-    g.addColorStop(0, `hsla(${h},100%,92%,0.9)`); g.addColorStop(1, `hsla(${h},100%,60%,0)`);
-    actx.fillStyle = g; actx.beginPath(); actx.arc(0, 0, r * 0.5, 0, 7); actx.fill();
+    actx.strokeStyle = 'hsla(42,70%,80%,0.55)'; actx.fillStyle = 'hsla(42,80%,85%,0.85)';
+    for (let j = 0; j < 7; j++) {
+      const a = j / 7 * Math.PI * 2 + 0.3, len = r * (0.28 + 0.08 * (j % 2));
+      actx.beginPath(); actx.moveTo(0, 0); actx.lineTo(Math.cos(a) * len, Math.sin(a) * len); actx.stroke();
+      actx.beginPath(); actx.arc(Math.cos(a) * len, Math.sin(a) * len, 1.1 * k, 0, 7); actx.fill();
+    }
     actx.restore();
-    this.spawn(p, h, 14, 2.5); this.rings.push({ ...p, h, r: 4, max: r * 3 });
+    this.scatter(p, i, 8); this.rings.push({ ...p, i, r: r * 0.5, max: r * 2.6 });
   },
 
-  burst(np, i) {                         // 和弦：放射状光线 + 同心圆，像烟花在画布上留下的印记
-    const p = this.toScreen(np), h = this.hue(i), k = this.k(), R = (90 + i * 4) * k;
+  // 涟漪：几圈略带起伏的同心圆，像石子落进水里
+  burst(np, i) {
+    const p = this.toScreen(np), k = this.k(), R = (70 + i * 3) * k, seed = Math.random() * 7;
     actx.save(); actx.globalCompositeOperation = 'lighter'; actx.translate(p.x, p.y);
-    for (let j = 0; j < 48; j++) {
-      const a = j / 48 * Math.PI * 2, r0 = R * (0.25 + 0.1 * (j % 3)), r1 = R * (0.6 + 0.4 * Math.random());
-      actx.strokeStyle = `hsla(${h + (j % 4) * 15},90%,70%,0.18)`; actx.lineWidth = 1.2 * k;
-      actx.beginPath(); actx.moveTo(Math.cos(a) * r0, Math.sin(a) * r0); actx.lineTo(Math.cos(a) * r1, Math.sin(a) * r1); actx.stroke();
-    }
-    for (const rr of [0.3, 0.55, 0.8]) {
-      actx.strokeStyle = `hsla(${h},90%,75%,0.15)`; actx.beginPath(); actx.arc(0, 0, R * rr, 0, 7); actx.stroke();
+    for (let n = 1; n <= 5; n++) {
+      const rr = R * n / 5;
+      actx.strokeStyle = this.color(i, 0.32 - n * 0.045, 10); actx.lineWidth = (n === 1 ? 1.4 : 0.8) * k;
+      actx.beginPath();
+      for (let s = 0; s <= 96; s++) {
+        const a = s / 96 * Math.PI * 2, wob = 1 + 0.025 * Math.sin(a * 6 + seed + n);
+        s ? actx.lineTo(Math.cos(a) * rr * wob, Math.sin(a) * rr * wob) : actx.moveTo(rr * wob, 0);
+      }
+      actx.stroke();
     }
     actx.restore();
-    this.spawn(p, h, 80, 6); this.rings.push({ ...p, h, r: 10, max: R * 2.2 });
+    this.scatter(p, i, 36); this.rings.push({ ...p, i, r: R * 0.2, max: R * 1.8 });
   },
 
-  spawn(p, h, n, sp) {
+  scatter(p, i, n) {                     // 微尘：慢慢向上飘散
     for (let j = 0; j < n; j++) {
-      const a = Math.random() * 7, v = Math.random() * sp + 0.5;
-      this.parts.push({ x: p.x, y: p.y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, h: h + Math.random() * 40 - 20, life: 1 });
+      const a = Math.random() * 7, v = Math.random() * 1.6 + 0.2;
+      this.parts.push({ x: p.x, y: p.y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, i, life: 1 });
     }
   },
 
-  // 每帧更新特效层：涟漪向外扩散，粒子受阻力减速并逐渐消失
   updateFx() {
     fctx.save(); fctx.globalCompositeOperation = 'lighter';
     this.rings = this.rings.filter(r => {
-      r.r += (r.max - r.r) * 0.06;
+      r.r += (r.max - r.r) * 0.05;
       const al = 1 - r.r / r.max;
-      fctx.strokeStyle = `hsla(${r.h},90%,75%,${al * 0.8})`; fctx.lineWidth = 2;
+      fctx.strokeStyle = this.color(r.i, al * 0.6, 15); fctx.lineWidth = 1;
       fctx.beginPath(); fctx.arc(r.x, r.y, r.r, 0, 7); fctx.stroke();
       return al > 0.03;
     });
     this.parts = this.parts.filter(q => {
-      q.x += q.vx; q.y += q.vy; q.vx *= 0.96; q.vy = q.vy * 0.96 + 0.03; q.life -= 0.015;
-      fctx.fillStyle = `hsla(${q.h},100%,75%,${q.life})`;
-      fctx.beginPath(); fctx.arc(q.x, q.y, 2 * q.life + 0.5, 0, 7); fctx.fill();
+      q.x += q.vx; q.y += q.vy; q.vx *= 0.95; q.vy = q.vy * 0.95 - 0.012; q.life -= 0.009;
+      fctx.fillStyle = this.color(q.i, q.life * 0.9, 20);
+      fctx.beginPath(); fctx.arc(q.x, q.y, 1.2 * q.life + 0.3, 0, 7); fctx.fill();
       return q.life > 0;
     });
     fctx.restore();
   },
 
-  // 左侧音阶刻度：让演奏者知道"手放在哪里是哪个音"
+  // 左侧的音阶刻度：宫商角徵羽，右边的小点表示第几个八度
   drawGuide(cur) {
     const v = this.view;
-    fctx.font = '11px sans-serif'; fctx.textBaseline = 'middle';
+    fctx.font = `13px ${SERIF}`; fctx.textBaseline = 'middle'; fctx.textAlign = 'center';
     for (let i = 0; i < 15; i++) {
       const y = v.y + (1 - (i + 0.5) / 15) * v.h, on = i === cur;
-      fctx.fillStyle = on ? `hsla(${this.hue(i)},90%,75%,0.9)` : 'rgba(200,210,255,0.22)';
-      fctx.fillText(NOTE_NAMES[i % 5] + '·'.repeat(Math.floor(i / 5) + 1), v.x + 14, y);
-      if (on) fctx.fillRect(v.x + 58, y - 0.5, v.w - 116, 1);
+      fctx.fillStyle = on ? this.color(i, 0.95, 12) : 'rgba(236,228,211,0.2)';
+      fctx.fillText(TONES[i % 5].name, v.x + 24, y);
+      for (let d = 0; d <= Math.floor(i / 5); d++) { fctx.beginPath(); fctx.arc(v.x + 38 + d * 4, y, 1, 0, 7); fctx.fill(); }
+      if (on) { fctx.fillStyle = this.color(i, 0.16); fctx.fillRect(v.x + 56, y - 0.5, v.w - 112, 1); }
     }
   },
 
+  // 光标：一个细圈加一个点；按下时圈收紧
   drawCursor(np, step, pressed, hold) {
-    const p = this.toScreen(np), h = this.hue(step), r = pressed ? 16 : 10;
-    const g = fctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r * 2.5);
-    g.addColorStop(0, `hsla(${h},100%,90%,0.9)`); g.addColorStop(1, `hsla(${h},100%,60%,0)`);
-    fctx.fillStyle = g; fctx.beginPath(); fctx.arc(p.x, p.y, r * 2.5, 0, 7); fctx.fill();
-    if (hold > 0) {                       // 比 ✌️ 时显示一个进度环
-      fctx.strokeStyle = '#f5d38a'; fctx.lineWidth = 3;
-      fctx.beginPath(); fctx.arc(p.x, p.y, 34, -Math.PI / 2, -Math.PI / 2 + hold * Math.PI * 2); fctx.stroke();
+    const p = this.toScreen(np), r = pressed ? 9 : 14;
+    const g = fctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, 30);
+    g.addColorStop(0, this.color(step, pressed ? 0.35 : 0.18, 15)); g.addColorStop(1, this.color(step, 0));
+    fctx.fillStyle = g; fctx.beginPath(); fctx.arc(p.x, p.y, 30, 0, 7); fctx.fill();
+    fctx.strokeStyle = this.color(step, 0.9, 18); fctx.lineWidth = 1;
+    fctx.beginPath(); fctx.arc(p.x, p.y, r, 0, 7); fctx.stroke();
+    fctx.fillStyle = this.color(step, 1, 25);
+    fctx.beginPath(); fctx.arc(p.x, p.y, pressed ? 3.2 : 1.8, 0, 7); fctx.fill();
+    if (hold > 0) {                       // 比「耶」时，外圈一点点走满
+      fctx.strokeStyle = '#d6b676'; fctx.lineWidth = 1.5;
+      fctx.beginPath(); fctx.arc(p.x, p.y, 24, -Math.PI / 2, -Math.PI / 2 + hold * Math.PI * 2); fctx.stroke();
     }
   }
 };
 
 /* ============================================================
  * 3. 三种输入
- *    每种输入每帧返回同一种结构：{ p: 归一化坐标, pinch: 是否按下, open: 和弦, victory: 结束 }
+ *    每种输入每帧返回同一种结构：{ p: 归一化坐标, pinch: 是否按下, open: 和弦, victory: 曲终 }
  *    主流程不关心输入来自哪里 —— 手、鼠标、还是程序自己。
  * ============================================================ */
 
 // 3.1 摄像头手势：MediaPipe 每帧给出手部 21 个关键点
 const MP = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14';
+const MODELS = ['hand_landmarker.task',      // 优先用同目录下的模型文件（国内网络更稳）
+  'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task'];
 const HAND_LINKS = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],
                     [9,13],[13,14],[14,15],[15,16],[13,17],[17,18],[18,19],[19,20],[0,17]];
 const Hand = {
@@ -396,13 +473,16 @@ const Hand = {
     this.video.srcObject = stream; await this.video.play();
     const vision = await import(MP);
     const files = await vision.FilesetResolver.forVisionTasks(MP + '/wasm');
-    const opts = d => ({ baseOptions: { delegate: d, modelAssetPath:
-      'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task' },
-      runningMode: 'VIDEO', numHands: 1 });
-    try { this.lm = await vision.HandLandmarker.createFromOptions(files, opts('GPU')); }
-    catch (e) { this.lm = await vision.HandLandmarker.createFromOptions(files, opts('CPU')); }
+    for (const model of MODELS) for (const delegate of ['GPU', 'CPU']) {
+      try {
+        this.lm = await vision.HandLandmarker.createFromOptions(files,
+          { baseOptions: { modelAssetPath: model, delegate }, runningMode: 'VIDEO', numHands: 1 });
+        return;
+      } catch (e) { console.warn(model, delegate, e); }
+    }
+    throw new Error('手势模型加载失败');
   },
-  // 摄像头坐标 → 屏幕坐标：水平镜像，并放大 1.4 倍，手不用伸到画面边缘也能够到屏幕四角
+  // 摄像头坐标 → 屏幕坐标：水平镜像，并放大 1.4 倍，手不用伸到画面边缘也能够到四角
   map: l => ({ x: clamp((0.5 - l.x) * 1.4 + 0.5, 0, 1), y: clamp((l.y - 0.5) * 1.4 + 0.5, 0, 1) }),
   read() {
     if (!this.lm || this.video.readyState < 2 || this.video.currentTime === this.lastVT) return this.last;
@@ -410,32 +490,32 @@ const Hand = {
     const h = this.lm.detectForVideo(this.video, performance.now()).landmarks[0];
     if (!h) { this.pts = null; return this.last = { p: null }; }
     const d = (a, b) => Math.hypot(h[a].x - h[b].x, h[a].y - h[b].y);
-    const size = d(0, 9);                                     // 手掌大小，用于消除远近的影响
+    const size = d(0, 9);                                     // 手掌大小，用来抵消手离镜头远近的影响
     const ext = tip => d(0, tip) > d(0, tip - 2) * 1.15;      // 指尖比第二关节离手腕更远 = 手指伸直
     const [iE, mE, rE, pE] = [8, 12, 16, 20].map(ext);
     const pinchR = d(4, 8) / size;
     this.pts = h.map(this.map);
     return this.last = {
-      p: this.pts[8],                                         // 食指指尖就是"画笔"
-      pinch: pinchR < 0.35,                                   // 拇指与食指捏合 = 按下琴键
+      p: this.pts[8],                                         // 食指指尖就是笔尖
+      pinch: pinchR < 0.35,                                   // 拇指与食指相捏 = 落音
       open: iE && mE && rE && pE && pinchR > 0.6,             // 五指张开 = 和弦
-      victory: iE && mE && !rE && !pE && pinchR > 0.5         // 比耶 ✌️ = 结束演奏
+      victory: iE && mE && !rE && !pE && pinchR > 0.5         // 比「耶」 = 曲终
     };
   },
   drawSkeleton() {
     if (!this.pts) return;
     const P = this.pts.map(q => Painter.toScreen(q));
-    fctx.strokeStyle = 'rgba(180,200,255,0.25)'; fctx.lineWidth = 1.5;
+    fctx.strokeStyle = 'rgba(236,228,211,0.16)'; fctx.lineWidth = 1;
     for (const [a, b] of HAND_LINKS) { fctx.beginPath(); fctx.moveTo(P[a].x, P[a].y); fctx.lineTo(P[b].x, P[b].y); fctx.stroke(); }
-    fctx.fillStyle = 'rgba(200,220,255,0.5)';
-    for (const q of P) { fctx.beginPath(); fctx.arc(q.x, q.y, 2.5, 0, 7); fctx.fill(); }
+    fctx.fillStyle = 'rgba(236,228,211,0.35)';
+    for (const q of P) { fctx.beginPath(); fctx.arc(q.x, q.y, 2, 0, 7); fctx.fill(); }
   }
 };
 
-// 3.2 鼠标 / 触屏：按住拖动 = 弹奏；空格或右键 = 和弦；回车 = 完成
+// 3.2 鼠标 / 触屏：按住拖动 = 落音；空格或右键 = 和弦；回车 = 曲终
 const Mouse = {
   p: null, down: false, tapped: false, chordFlag: false,
-  read() {   // tapped 保证即使按下和松开发生在同一帧之内，这次点击也不会丢
+  read() {   // tapped 保证即使按下和松开发生在同一帧之内，这一下也不会丢
     const o = { p: this.p, pinch: this.down || this.tapped, open: this.chordFlag, victory: false };
     this.chordFlag = this.tapped = false; return o;
   }
@@ -454,7 +534,7 @@ addEventListener('keydown', e => {
   if (e.code === 'Enter') finish();
 });
 
-// 3.3 自动演奏：程序自己"挥手"。轨迹是两组不同频率正弦叠加的利萨如曲线，节奏来自一个 16 拍的节奏型
+// 3.3 自动演奏：程序自己"挥手"。轨迹是两组不同频率正弦叠加的利萨如曲线，节奏来自一个十六拍的节奏型
 const Auto = {
   t: 0, rhythm: [1,0,1,1, 0,1,1,0, 1,0,1,0, 1,1,1,0],
   read(dt) {
@@ -471,11 +551,17 @@ const Auto = {
 
 /* ============================================================
  * 4. 录制与编码
- *    贺卡要能"重放"整场演奏，但不想依赖服务器 —— 于是把演奏压缩进网址本身。
+ *    信笺要能"重放"整支曲子，又不想依赖服务器 —— 于是把曲子写进网址本身。
  *    每个采样点只占 4 个字节：[距上一点的时间, x, y, 状态位]
  *    状态位：最高位 = 是否按下，次高位 = 抬手，低 5 位 = 事件（1~15 单音，16~30 和弦）
- *    数据过长时，保留所有发声的点，其余点隔一删一，直到能放进一个二维码。
+ *    数据太长时，保留所有发声的点，其余的点隔一删一，直到能放进一个二维码。
+ *    文字也转成 UTF-8 再做 base64，比百分号编码短一半多。
  * ============================================================ */
+const b64u = bytes => btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const unb64u = s => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
+const encText = t => b64u(new TextEncoder().encode(t));
+const decText = s => new TextDecoder().decode(unb64u(s));
+
 const Rec = {
   s: [], lastT: 0, lastSample: 0, lastPressed: false,
   reset(now) { this.s = []; this.lastT = this.lastSample = now; },
@@ -486,7 +572,7 @@ const Rec = {
   },
   encode() {
     let s = this.s;
-    while (s.length * 4 > 800) {
+    while (s.length * 4 > 640) {
       const out = []; let carry = 0;
       s.forEach((e, i) => {
         if (e.ev || e.lift || i % 2 === 0) { out.push({ ...e, dt: e.dt + carry }); carry = 0; } else carry += e.dt;
@@ -500,52 +586,74 @@ const Rec = {
       b[i * 4 + 1] = Math.round(e.x * 255); b[i * 4 + 2] = Math.round(e.y * 255);
       b[i * 4 + 3] = (e.pressed ? 128 : 0) | (e.lift ? 64 : 0) | e.ev;
     });
-    return btoa(String.fromCharCode(...b)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    return b64u(b);
   },
   decode(str) {
-    const bin = atob(str.replace(/-/g, '+').replace(/_/g, '/')), s = []; let t = 0;
-    for (let i = 0; i + 3 < bin.length; i += 4) {
-      const c = k => bin.charCodeAt(i + k), f = c(3);
-      t += c(0) * 20;
-      s.push({ t, p: { x: c(1) / 255, y: c(2) / 255 }, pressed: !!(f & 128), lift: !!(f & 64), ev: f & 31 });
+    const b = unb64u(str), s = []; let t = 0;
+    for (let i = 0; i + 3 < b.length; i += 4) {
+      const f = b[i + 3];
+      t += b[i] * 20;
+      s.push({ t, p: { x: b[i + 1] / 255, y: b[i + 2] / 255 }, pressed: !!(f & 128), lift: !!(f & 64), ev: f & 31 });
     }
     return s;
   }
 };
 
 /* ============================================================
- * 5. 贺卡生成
- *    把画作铺满卡面，叠加渐变遮罩、祝福文字、演奏数据和二维码，导出为 1600×1000 的 JPG。
+ * 5. 信笺生成（1600×1000）
+ *    左边是画，右边是信：题头与印章、称呼、寄语、落款、五声色谱、二维码。
  * ============================================================ */
-function renderCard(info) {
+async function renderCard(info) {
   const W = 1600, H = 1000, c = document.createElement('canvas'), g = c.getContext('2d');
   c.width = W; c.height = H;
-  const v = Painter.view, sx = v.x * DPR, sy = v.y * DPR, sw = v.w * DPR, sh = v.h * DPR;
-  const sc = Math.max(W / sw, H / sh), dw = sw * sc, dh = sh * sc;
-  g.drawImage(bg, sx, sy, sw, sh, (W - dw) / 2, (H - dh) / 2, dw, dh);
-  g.drawImage(art, sx, sy, sw, sh, (W - dw) / 2, (H - dh) / 2, dw, dh);
+  try { await document.fonts.load(`40px "Noto Serif SC"`, info.to + info.msg + info.from + '指尖交响奏致扫码听曲宫商角徵羽音秒' + CN); } catch (e) {}
 
-  const shade = g.createLinearGradient(0, H * 0.45, 0, H);
-  shade.addColorStop(0, 'rgba(3,5,15,0)'); shade.addColorStop(1, 'rgba(3,5,15,0.88)');
-  g.fillStyle = shade; g.fillRect(0, 0, W, H);
-  g.strokeStyle = 'rgba(245,211,138,0.6)'; g.lineWidth = 2; g.strokeRect(30, 30, W - 60, H - 60);
-  g.strokeStyle = 'rgba(245,211,138,0.25)'; g.strokeRect(40, 40, W - 80, H - 80);
+  g.fillStyle = '#0b0e17'; g.fillRect(0, 0, W, H);
+  for (let i = 0; i < 16000; i++) { g.fillStyle = `rgba(236,228,211,${Math.random() * 0.03})`; g.fillRect(Math.random() * W, Math.random() * H, 1, 1); }
 
-  const font = '"PingFang SC","Microsoft YaHei",sans-serif';
-  g.fillStyle = 'rgba(232,236,255,0.7)'; g.font = `22px ${font}`;
-  g.fillText('指 尖 交 响  ·  A SYMPHONY AT YOUR FINGERTIPS', 80, 95);
-  g.fillStyle = '#f5d38a'; g.font = `bold 68px ${font}`; g.fillText(`致 ${info.to}`, 80, 690);
-  g.fillStyle = '#e8ecff'; g.font = `36px ${font}`;
-  wrapText(g, info.msg, 80, 760, 1000, 52);
-  g.fillStyle = 'rgba(232,236,255,0.8)'; g.font = `28px ${font}`; g.fillText(`—— ${info.from}`, 80, 880);
-  g.fillStyle = 'rgba(232,236,255,0.45)'; g.font = `20px ${font}`;
-  g.fillText(`用指尖为你弹奏了 ${info.notes} 个音符 · 时长 ${info.secs} 秒 · 每一笔光，都是一个音`, 80, 925);
+  // 画：裁成"窗"放在左边
+  const win = { x: 64, y: 64, w: 1000, h: 872 }, v = Painter.view;
+  const sx = v.x * DPR, sy = v.y * DPR, sw = v.w * DPR, sh = v.h * DPR;
+  const sc = Math.max(win.w / sw, win.h / sh), dw = sw * sc, dh = sh * sc;
+  g.save(); g.beginPath(); g.rect(win.x, win.y, win.w, win.h); g.clip();
+  for (const layer of [bg, art]) g.drawImage(layer, sx, sy, sw, sh, win.x + (win.w - dw) / 2, win.y + (win.h - dh) / 2, dw, dh);
+  g.restore();
+  g.strokeStyle = 'rgba(214,182,118,0.45)'; g.lineWidth = 1; g.strokeRect(win.x - 0.5, win.y - 0.5, win.w + 1, win.h + 1);
+  g.strokeStyle = 'rgba(214,182,118,0.28)'; g.strokeRect(28.5, 28.5, W - 57, H - 57);
+
+  // 信
+  const X = 1124, R = 1536;
+  const font = (px, w = 400) => `${w} ${px}px ${SERIF}`;
+  if ('letterSpacing' in g) g.letterSpacing = '8px';
+  g.fillStyle = 'rgba(236,228,211,0.55)'; g.font = font(20); g.fillText('指尖交响', X, 122);
+  if ('letterSpacing' in g) g.letterSpacing = '0px';
+  g.fillStyle = '#b23a2e'; g.fillRect(R - 40, 94, 40, 40);
+  g.strokeStyle = 'rgba(243,233,216,0.3)'; g.strokeRect(R - 36.5, 97.5, 33, 33);
+  g.fillStyle = '#f3e9d8'; g.font = font(22); g.textAlign = 'center'; g.fillText('奏', R - 20, 122); g.textAlign = 'left';
+  g.fillStyle = 'rgba(214,182,118,0.4)'; g.fillRect(X, 164, R - X, 1);
+
+  g.fillStyle = '#e2c88f'; g.font = font(50, 600); g.fillText('致 ' + info.to, X, 248);
+  g.fillStyle = '#ece4d3'; g.font = font(27);
+  const y = wrapText(g, info.msg, X, 318, R - X, 48);
+  g.textAlign = 'right'; g.fillStyle = 'rgba(236,228,211,0.75)'; g.font = font(23);
+  g.fillText('—— ' + info.from, R, y + 66); g.textAlign = 'left';
+
+  TONES.forEach((t, j) => {                    // 五声色谱：告诉读信的人，每种颜色是哪个音
+    const x = X + j * 66;
+    g.fillStyle = Painter.color(j + 5, 1); g.beginPath(); g.arc(x + 6, 552, 5, 0, 7); g.fill();
+    g.fillStyle = 'rgba(236,228,211,0.6)'; g.font = font(19); g.fillText(t.name, x + 18, 559);
+  });
+  g.fillStyle = 'rgba(236,228,211,0.42)'; g.font = font(17);
+  g.fillText(`${cnNum(info.notes)}音 · ${cnNum(info.secs)}秒`, X, 598);
 
   const qr = makeQR(info.url);
-  if (qr) {
-    g.fillStyle = '#fff'; roundRect(g, W - 370, H - 440, 290, 330, 16); g.fill();
-    g.imageSmoothingEnabled = false; g.drawImage(qr, W - 355, H - 425, 260, 260);
-    g.fillStyle = '#1a2250'; g.font = `22px ${font}`; g.textAlign = 'center'; g.fillText('扫码聆听这首曲子', W - 225, H - 135);
+  if (qr) {                                   // 二维码按整数倍放大，保证每个格子清晰可扫
+    const scale = clamp(Math.floor(300 / qr.width), 2, 4), s = qr.width * scale, pad = 4 * scale, qx = R - s - pad, qy = 936 - s - pad;
+    g.fillStyle = '#f4efe4'; g.fillRect(qx - pad, qy - pad, s + pad * 2, s + pad * 2);   // 四格宽的留白，扫码更稳
+    g.imageSmoothingEnabled = false; g.drawImage(qr, qx, qy, s, s); g.imageSmoothingEnabled = true;
+    g.fillStyle = 'rgba(236,228,211,0.5)'; g.font = font(17); g.textAlign = 'center';
+    [...'扫码听曲'].forEach((ch, j) => g.fillText(ch, qx - pad - 28, qy + 22 + j * 28));    // 竖排
+    g.textAlign = 'left';
   }
   return c;
 }
@@ -555,62 +663,59 @@ function wrapText(g, text, x, y, maxW, lh) {
     if (g.measureText(line + ch).width > maxW) { g.fillText(line, x, y); line = ch; y += lh; } else line += ch;
   }
   g.fillText(line, x, y);
-}
-function roundRect(g, x, y, w, h, r) {
-  g.beginPath(); g.moveTo(x + r, y); g.arcTo(x + w, y, x + w, y + h, r); g.arcTo(x + w, y + h, x, y + h, r);
-  g.arcTo(x, y + h, x, y, r); g.arcTo(x, y, x + w, y, r); g.closePath();
+  return y;
 }
 function makeQR(url) {
   try {
     const q = qrcode(0, 'L'); q.addData(url); q.make();
     const n = q.getModuleCount(), c = document.createElement('canvas'), g = c.getContext('2d');
-    const margin = 4;
-    c.width = c.height = n + margin * 2;
-    g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height); g.fillStyle = '#000';
-    for (let r = 0; r < n; r++) for (let col = 0; col < n; col++) if (q.isDark(r, col)) g.fillRect(col + margin, r + margin, 1, 1);
+    c.width = c.height = n; g.fillStyle = '#111';
+    for (let r = 0; r < n; r++) for (let col = 0; col < n; col++) if (q.isDark(r, col)) g.fillRect(col, r, 1, 1);
     return c;
   } catch (e) { return null; }
 }
-function showCard(info) {
-  // 贺卡统一使用公开分享站点，避免从本地文件或旧托管地址生成不可访问的二维码。
-  info = { ...info, url: 'https://edwardyu1596-maker.github.io/fingertip-symphony/' + new URL(info.url, location.href).hash };
-  const c = renderCard(info);
-  $('#cardImg').src = c.toDataURL('image/jpeg', 0.92);
-  $('#saveBtn').onclick = () => { const a = document.createElement('a'); a.href = $('#cardImg').src; a.download = `指尖交响_致${info.to}.jpg`; a.click(); };
-  $('#copyBtn').onclick = () => navigator.clipboard.writeText(info.url).then(() => toast('链接已复制，发给 TA 吧'));
-  $('#linkNote').textContent = '将贺卡发给朋友，微信长按识别二维码，打开后轻触“打开并播放”即可聆听。';
+const SHARE_SITE = 'https://edwardyu1596-maker.github.io/fingertip-symphony/';
+async function showCard(info) {
+  // 信笺统一指向公开站点，避免从本地文件生成手机打不开的二维码
+  info = { ...info, url: SHARE_SITE + new URL(info.url, location.href).hash };
+  const c = await renderCard(info);
+  $('#cardImg').src = c.toDataURL('image/jpeg', 0.93);
+  $('#saveBtn').onclick = () => { const a = document.createElement('a'); a.href = $('#cardImg').src; a.download = `指尖交响·致${info.to}.jpg`; a.click(); };
+  $('#copyBtn').onclick = () => navigator.clipboard.writeText(info.url).then(() => toast('链接已复制'));
+  $('#linkNote').textContent = '把信笺发给 TA，微信里长按识别二维码，拆开就能听到这支曲子';
   $('#form').hidden = true; $('#hud').hidden = true; $('#card').hidden = false;
 }
 
 /* ============================================================
  * 6. 主流程
- *    idle（封面）→ play（演奏）→ done（填写祝福）→ 贺卡
- *    或者从带数据的链接进入：信封 → replay（回放）→ 贺卡
+ *    封面 → play（弹奏）→ done（写寄语）→ 信笺
+ *    或者从带数据的链接进入：信封 → replay（回放）→ 信笺
  * ============================================================ */
 const TIPS = {
-  hand: '捏合拇指与食指：弹奏　·　张开手掌：和弦　·　比 ✌️ 保持一秒：完成',
-  mouse: '按住拖动：弹奏　·　空格 / 右键：和弦　·　回车：完成',
-  auto: '自动演奏中……程序正在用正弦曲线"挥手"'
+  hand: '拇指食指相捏 · 落音        五指张开 · 和弦        比个「耶」停一秒 · 曲终',
+  mouse: '按住拖动 · 落音        空格或右键 · 和弦        回车 · 曲终',
+  auto: '它在自己弹 —— 一条正弦曲线，正替你挥手'
 };
 
 async function begin(kind) {
   Audio.init(); await Audio.ctx.resume();
   if (kind === 'hand') {
-    $('#loading').textContent = '正在打开摄像头并加载手势模型……';
+    $('#loading').textContent = '正在唤醒摄像头……';
     try { await Hand.start(); $('#cam').classList.add('on'); }
-    catch (e) { console.error(e); toast('摄像头或模型加载失败，已切换为鼠标模式'); kind = 'mouse'; }
+    catch (e) { console.error(e); toast('摄像头没有打开，先用鼠标弹吧'); kind = 'mouse'; }
   }
   S.src = { hand: Hand, mouse: Mouse, auto: Auto }[kind];
   Auto.t = 0;
   $('#tip').textContent = TIPS[kind];
   $('#start').hidden = true; $('#hud').hidden = false;
+  document.activeElement.blur();
   actx.clearRect(0, 0, innerWidth, innerHeight);
   fitView(innerWidth / innerHeight);
   Object.assign(S, { mode: 'play', t0: performance.now(), notes: 0, smooth: null, lifted: true, vT: 0 });
   Rec.reset(performance.now());
 }
 
-// 把一个事件同时变成声音和画面 —— 现场演奏与回放共用这一个函数，保证两者完全一致
+// 把一个事件同时变成声音和画 —— 现场弹奏与回放共用这一个函数，两者因此完全一致
 function apply(p, pressed, ev) {
   const step = stepOf(p.y), pan = (p.x - 0.5) * 1.4;
   Painter.stroke(p, step, pressed);
@@ -630,7 +735,7 @@ function handleInput(inp, now) {
   S.smooth = S.smooth ? { x: S.smooth.x + (inp.p.x - S.smooth.x) * a, y: S.smooth.y + (inp.p.y - S.smooth.y) * a } : { ...inp.p };
   const p = S.smooth, step = stepOf(p.y);
 
-  // 触发规则：刚捏合时发声；保持捏合并滑到新的音高时再次发声（像在琴弦上划过）
+  // 落音规则：刚捏合时响一声；捏着滑到新的音高时再响一声（像手指拨过琴弦）
   let ev = 0;
   if (inp.pinch && (!S.prevPinch || (step !== S.lastStep && now - S.lastNoteT > 90))) ev = step + 1;
   if (inp.open && !S.prevOpen) ev = 16 + step;
@@ -647,30 +752,32 @@ function handleInput(inp, now) {
 function finish() {
   if (S.mode !== 'play') return;
   S.mode = 'done'; Painter.lift();
-  [0, 2, 4, 7, 10].forEach((n, j) => Audio.note(n, 0.8, 0, j * 0.12));   // 结尾的上行琶音
+  [0, 2, 4, 7, 10].forEach((n, j) => Audio.note(n, 0.8, 0, j * 0.12));   // 收尾的上行琶音
   S.secs = Math.round((performance.now() - S.t0) / 1000);
-  $('#formStat').textContent = `你弹奏了 ${S.notes} 个音符，用时 ${S.secs} 秒。写下想对 TA 说的话：`;
+  $('#formStat').textContent = `这一曲共${cnNum(S.notes)}个音，历时${cnNum(S.secs)}秒。`;
   $('#hud').hidden = true; $('#form').hidden = false;
 }
 
 $('#makeCard').onclick = () => {
-  const to = $('#fTo').value.trim() || '你', msg = $('#fMsg').value.trim() || '祝你快乐', from = $('#fFrom').value.trim() || '我';
-  const data = ['v1', Math.round(Painter.view.w / Painter.view.h * 100), Rec.encode(),
-                encodeURIComponent(to), encodeURIComponent(msg), encodeURIComponent(from)].join(',');
+  const to = $('#fTo').value.trim() || '你', msg = $('#fMsg').value.trim() || '愿你安好。', from = $('#fFrom').value.trim() || '我';
+  const data = ['v2', Math.round(Painter.view.w / Painter.view.h * 100), Rec.encode(), encText(to), encText(msg), encText(from)].join('.');
   showCard({ to, msg, from, notes: S.notes, secs: S.secs, url: location.href.split('#')[0] + '#' + data });
 };
 
-// 从链接打开：解析网址中的演奏数据，先显示信封，点击后（浏览器要求用户点击才能发声）开始回放
+// 从链接打开：解析网址里的曲子，先显示信封；点"拆开"后开始回放（浏览器要求点击之后才能发声）
+// 两种格式：v2（当前，文字用 base64）与 v1（早期，用逗号和百分号编码），已发出的旧链接仍能打开
 function tryReplay() {
-  const parts = location.hash.slice(1).split(',');
-  if (parts[0] !== 'v1' || parts.length < 6) return false;
-  let samples;
-  try { samples = Rec.decode(parts[2]); } catch (e) { return false; }
-  const [to, msg, from] = parts.slice(3, 6).map(decodeURIComponent);
+  const raw = location.hash.slice(1), v1 = raw.startsWith('v1,');
+  if (!v1 && !raw.startsWith('v2.')) return false;
+  const parts = raw.split(v1 ? ',' : '.');
+  if (parts.length < 6) return false;
+  let samples, to, msg, from;
+  try { samples = Rec.decode(parts[2]); [to, msg, from] = parts.slice(3, 6).map(v1 ? decodeURIComponent : decText); } catch (e) { return false; }
   S.aspect = (+parts[1] || 178) / 100;
   $('#start').hidden = true; $('#env').hidden = false;
-  $('#envTitle').textContent = `致 ${to}`;
-  $('#envDesc').textContent = `${from} 用指尖为你弹奏了一首曲子，并把它画了下来。`;
+  $('#envTitle').textContent = '致 ' + to;
+  $('#envDesc').innerHTML = '';
+  $('#envDesc').append(`${from}用指尖为你弹了一支曲子，`, document.createElement('br'), '也把它画了下来。');
   $('#openBtn').onclick = () => openSharedSong(async () => {
     Audio.init(); await unlockAudio(Audio.ctx);
     $('#env').hidden = true; S.mode = 'replay'; fitView(S.aspect);
@@ -687,7 +794,7 @@ function tryReplay() {
       if (rt > end + 2500) {
         S.mode = 'done';
         showCard({ to, msg, from, notes: samples.filter(s => s.ev).length, secs: Math.round(end / 1000), url: location.href });
-        document.querySelectorAll('.again').forEach(b => b.textContent = '我也来弹一首');
+        document.querySelectorAll('.again').forEach(b => b.textContent = '我也弹一首');
       }
     };
   });
@@ -704,7 +811,8 @@ function frame(now) {
   fctx.clearRect(0, 0, innerWidth, innerHeight);
   if (S.mode === 'play') {
     handleInput(S.src.read(dt), now);
-    $('#stat').textContent = `♪ ${S.notes}　${Math.floor((now - S.t0) / 1000)}s`;
+    const sec = Math.floor((now - S.t0) / 1000);
+    $('#stat').textContent = `第 ${S.notes} 音　${String(Math.floor(sec / 60)).padStart(2, '0')}:${String(sec % 60).padStart(2, '0')}`;
   } else if (S.mode === 'replay') S.replay(now);
   Painter.updateFx();
   requestAnimationFrame(frame);
